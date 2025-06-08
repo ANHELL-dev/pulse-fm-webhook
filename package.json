@@ -2,7 +2,6 @@
   "name": "pulse-fm-webhook",
   "version": "1.0.0",
   "description": "Webhook handler for myradio24",
-  "type": "module",
   "dependencies": {
     "firebase-admin": "^12.0.0"
   },
