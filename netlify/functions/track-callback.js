@@ -310,12 +310,17 @@ exports.handler = async (event, context) => {
                     const db = admin.firestore();
                     const timestamp = admin.firestore.FieldValue.serverTimestamp();
                     
+                    // Московское время (UTC+3)
+                    const moscowTime = new Date();
+                    moscowTime.setHours(moscowTime.getHours() + 3);
+                    
                     // Сохраняем как известный трек
                     await db.collection('known_tracks').doc(trackId).set({
                         trackId,
                         artist,
                         title,
                         firstSeen: timestamp,
+                        firstSeenMoscow: moscowTime,
                         source: 'myradio24_callback'
                     });
                     
@@ -325,7 +330,9 @@ exports.handler = async (event, context) => {
                         title,
                         trackId,
                         addedToLibrary: timestamp,
+                        addedToLibraryMoscow: moscowTime,
                         firstPlayed: timestamp,
+                        firstPlayedMoscow: moscowTime,
                         source: 'myradio24_callback',
                         radioStation: 'PULSE FM'
                     });
