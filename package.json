@@ -1,11 +1,16 @@
 {
-  "name": "pulse-fm-webhook",
+  "name": "radio-tracks-api",
   "version": "1.0.0",
-  "description": "Webhook handler for myradio24",
+  "description": "API для отслеживания новых треков радиостанции",
+  "main": "index.js",
+  "scripts": {
+    "dev": "vercel dev",
+    "build": "echo 'Build complete'"
+  },
   "dependencies": {
     "firebase-admin": "^12.0.0"
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   }
 }
