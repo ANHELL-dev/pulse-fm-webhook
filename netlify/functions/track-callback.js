@@ -1,95 +1,220 @@
 const admin = require('firebase-admin');
 
-// Простая инициализация Firebase
+// Глобальная переменная для отслеживания инициализации
+let firebaseInitialized = false;
+
+// Функция инициализации Firebase
 function initializeFirebase() {
-    // Проверяем, не инициализирован ли уже Firebase
-    if (admin.apps.length > 0) {
-        console.log('✅ Firebase уже инициализирован');
+    if (firebaseInitialized || admin.apps.length > 0) {
         return true;
     }
     
     try {
-        console.log('🔄 Инициализация Firebase...');
-        
-        // Получаем переменные окружения
         const privateKey = process.env.FIREBASE_PRIVATE_KEY;
         const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-        const projectId = "pulse-fm-84a48";
-        
-        console.log('📋 Проверка данных:');
-        console.log('- Project ID:', projectId);
-        console.log('- Client Email:', clientEmail);
-        console.log('- Private Key длина:', privateKey ? privateKey.length : 0);
-        console.log('- Private Key начинается с:', privateKey ? privateKey.substring(0, 30) : 'null');
         
         if (!privateKey || !clientEmail) {
-            throw new Error('Отсутствуют обязательные переменные окружения');
+            throw new Error('Missing Firebase credentials');
         }
         
-        // Простая обработка приватного ключа
-        let cleanPrivateKey = privateKey;
+        // Простая обработка ключа
+        let cleanKey = privateKey.replace(/\\n/g, '\n');
         
-        // Если это строка из environment variable, очищаем её
-        if (typeof cleanPrivateKey === 'string') {
-            // Заменяем \\n на настоящие переносы строк
-            cleanPrivateKey = cleanPrivateKey.replace(/\\n/g, '\n');
-            
-            // Убираем лишние кавычки если есть
-            cleanPrivateKey = cleanPrivateKey.replace(/^"/, '').replace(/"$/, '');
-        }
-        
-        console.log('🔑 Обработанный ключ начинается с:', cleanPrivateKey.substring(0, 30));
-        console.log('🔑 Обработанный ключ заканчивается на:', cleanPrivateKey.substring(cleanPrivateKey.length - 30));
-        
-        // Конфигурация Firebase
-        const serviceAccount = {
-            type: "service_account",
-            project_id: projectId,
-            private_key_id: "dummy", // Не обязательно для работы
-            private_key: cleanPrivateKey,
-            client_email: clientEmail,
-            client_id: "dummy", // Не обязательно для работы
-            auth_uri: "https://accounts.google.com/o/oauth2/auth",
-            token_uri: "https://oauth2.googleapis.com/token",
-            auth_provider_x509_cert_url: "https://www.googleapis.com/oauth2/v1/certs"
-        };
-        
-        // Инициализируем Firebase Admin
         admin.initializeApp({
-            credential: admin.credential.cert(serviceAccount),
-            projectId: projectId
+            credential: admin.credential.cert({
+                projectId: "pulse-fm-84a48",
+                privateKey: cleanKey,
+                clientEmail: clientEmail,
+            })
         });
         
-        console.log('✅ Firebase успешно инициализирован');
+        firebaseInitialized = true;
+        console.log('✅ Firebase инициализирован');
         return true;
         
     } catch (error) {
-        console.error('❌ Полная ошибка Firebase:', error);
-        console.error('❌ Стек ошибки:', error.stack);
+        console.error('❌ Firebase ошибка:', error);
         return false;
     }
 }
 
-// Функция для тестирования подключения к Firestore
-async function testFirestoreConnection() {
+// Кэш треков
+let knownTracks = new Set();
+let cacheLoaded = false;
+
+// Загрузка кэша
+async function loadCache() {
+    if (cacheLoaded) return;
+    
     try {
-        console.log('🧪 Тестирование подключения к Firestore...');
-        
         const db = admin.firestore();
+        const snapshot = await db.collection('known_tracks').select('trackId').get();
         
-        // Простой тест - получение коллекции
-        const testCollection = await db.collection('test').limit(1).get();
-        console.log('✅ Firestore подключение работает');
+        knownTracks.clear();
+        snapshot.forEach(doc => {
+            knownTracks.add(doc.data().trackId);
+        });
         
-        return true;
+        cacheLoaded = true;
+        console.log(`Загружено ${knownTracks.size} известных треков`);
     } catch (error) {
-        console.error('❌ Ошибка подключения к Firestore:', error);
-        return false;
+        console.error('Ошибка загрузки кэша:', error);
+        cacheLoaded = true; // Продолжаем без кэша
     }
 }
 
-// Экспортируем функции
-module.exports = {
-    initializeFirebase,
-    testFirestoreConnection
+// Создание ID трека
+function createTrackId(artist, title) {
+    const clean = (text) => (text || '').toLowerCase().trim().replace(/[^\w\s\u0400-\u04FF]/g, '').replace(/\s+/g, '_');
+    return `${clean(artist)}_${clean(title)}`;
+}
+
+// Валидация трека
+function isValidTrack(data) {
+    if (!data) return false;
+    
+    const artist = (data.artist || '').trim();
+    const title = (data.title || '').trim();
+    
+    if (!artist || !title) return false;
+    
+    // Фильтруем служебную информацию
+    const blacklist = ['реклама', 'джингл', 'позывные', 'promo', 'jingle'];
+    const text = `${artist} ${title}`.toLowerCase();
+    
+    return !blacklist.some(word => text.includes(word));
+}
+
+// ГЛАВНАЯ ФУНКЦИЯ - правильный экспорт для Netlify
+exports.handler = async (event, context) => {
+    // CORS заголовки
+    const headers = {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Headers': 'Content-Type',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Content-Type': 'application/json'
+    };
+    
+    // OPTIONS запрос
+    if (event.httpMethod === 'OPTIONS') {
+        return { statusCode: 200, headers, body: '' };
+    }
+    
+    try {
+        console.log('📨 Новый запрос:', event.httpMethod);
+        
+        // Инициализация
+        if (!initializeFirebase()) {
+            return {
+                statusCode: 500,
+                headers,
+                body: JSON.stringify({ error: 'Firebase initialization failed' })
+            };
+        }
+        
+        await loadCache();
+        
+        // Получение данных трека
+        let trackData = {};
+        
+        if (event.httpMethod === 'POST' && event.body) {
+            try {
+                trackData = JSON.parse(event.body);
+            } catch (e) {
+                console.log('Не JSON данные, пробуем как query string');
+                // Если не JSON, возможно это form data
+                const params = new URLSearchParams(event.body);
+                trackData = Object.fromEntries(params);
+            }
+        } else if (event.httpMethod === 'GET') {
+            trackData = event.queryStringParameters || {};
+        }
+        
+        console.log('📝 Данные трека:', trackData);
+        
+        // Валидация
+        if (!isValidTrack(trackData)) {
+            return {
+                statusCode: 400,
+                headers,
+                body: JSON.stringify({ 
+                    error: 'Invalid track data', 
+                    received: trackData 
+                })
+            };
+        }
+        
+        const artist = trackData.artist.trim();
+        const title = trackData.title.trim();
+        const trackId = createTrackId(artist, title);
+        
+        console.log(`🎵 Трек: "${artist} - ${title}"`);
+        
+        // Проверка новизны
+        if (!knownTracks.has(trackId)) {
+            console.log('🆕 НОВЫЙ ТРЕК!');
+            
+            knownTracks.add(trackId);
+            
+            const db = admin.firestore();
+            const timestamp = admin.firestore.FieldValue.serverTimestamp();
+            
+            // Сохраняем известный трек
+            await db.collection('known_tracks').doc(trackId).set({
+                trackId,
+                artist,
+                title,
+                firstSeen: timestamp
+            });
+            
+            // Добавляем в новинки
+            await db.collection('new_tracks').add({
+                artist,
+                title,
+                trackId,
+                addedToLibrary: timestamp,
+                firstPlayed: timestamp,
+                source: 'myradio24'
+            });
+            
+            console.log(`✅ Трек добавлен: ${artist} - ${title}`);
+            
+            return {
+                statusCode: 200,
+                headers,
+                body: JSON.stringify({ 
+                    success: true, 
+                    message: 'New track added',
+                    track: { artist, title, trackId },
+                    isNew: true
+                })
+            };
+            
+        } else {
+            console.log('ℹ️ Трек уже известен');
+            
+            return {
+                statusCode: 200,
+                headers,
+                body: JSON.stringify({ 
+                    success: true, 
+                    message: 'Track already known',
+                    track: { artist, title, trackId },
+                    isNew: false
+                })
+            };
+        }
+        
+    } catch (error) {
+        console.error('❌ Ошибка:', error);
+        
+        return {
+            statusCode: 500,
+            headers,
+            body: JSON.stringify({ 
+                error: 'Server error',
+                message: error.message
+            })
+        };
+    }
 };
