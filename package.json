@@ -1,0 +1,12 @@
+{
+  "name": "pulse-fm-webhook",
+  "version": "1.0.0",
+  "description": "Webhook handler for myradio24",
+  "main": "index.js",
+  "dependencies": {
+    "firebase-admin": "^11.0.0"
+  },
+  "scripts": {
+    "dev": "netlify dev"
+  }
+}
