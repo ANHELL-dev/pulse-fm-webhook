@@ -1,58 +1,5 @@
 const admin = require('firebase-admin');
 
-// Глобальная инициализация Firebase
-let firebaseInitialized = false;
-
-function initializeFirebase() {
-    if (firebaseInitialized) {
-        return true;
-    }
-    
-    try {
-        const privateKey = process.env.FIREBASE_PRIVATE_KEY;
-        const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-        
-        console.log('🔍 Status check - переменные окружения:');
-        console.log('Private key exists:', !!privateKey);
-        console.log('Client email exists:', !!clientEmail);
-        console.log('Client email:', clientEmail);
-        
-        if (!privateKey || !clientEmail) {
-            throw new Error(`Missing environment variables. Private key: ${!!privateKey}, Client email: ${!!clientEmail}`);
-        }
-        
-        // Обрабатываем приватный ключ
-        let processedPrivateKey = privateKey;
-        
-        if (!processedPrivateKey.includes('\n')) {
-            processedPrivateKey = processedPrivateKey
-                .replace(/-----BEGIN PRIVATE KEY-----/, '-----BEGIN PRIVATE KEY-----\n')
-                .replace(/-----END PRIVATE KEY-----/, '\n-----END PRIVATE KEY-----')
-                .replace(/(.{64})/g, '$1\n')
-                .replace(/\n\n/g, '\n');
-        }
-        
-        processedPrivateKey = processedPrivateKey.replace(/\\n/g, '\n');
-        
-        admin.initializeApp({
-            credential: admin.credential.cert({
-                projectId: "pulse-fm-84a48",
-                privateKey: processedPrivateKey,
-                clientEmail: clientEmail,
-            }),
-            databaseURL: "https://pulse-fm-84a48-default-rtdb.firebaseio.com"
-        });
-        
-        firebaseInitialized = true;
-        console.log('✅ Firebase инициализирован для статуса');
-        return true;
-        
-    } catch (error) {
-        console.error('❌ Ошибка инициализации Firebase в статусе:', error);
-        return false;
-    }
-}
-
 exports.handler = async (event, context) => {
     const headers = {
         'Access-Control-Allow-Origin': '*',
@@ -60,103 +7,177 @@ exports.handler = async (event, context) => {
     };
     
     try {
-        console.log('📊 Запрос статуса системы');
+        console.log('📊 === ЗАПРОС СТАТУСА СИСТЕМЫ ===');
         
         // Проверяем переменные окружения
-        const hasPrivateKey = !!process.env.FIREBASE_PRIVATE_KEY;
-        const hasClientEmail = !!process.env.FIREBASE_CLIENT_EMAIL;
+        const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+        const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
         
-        if (!hasPrivateKey || !hasClientEmail) {
+        console.log('🔍 Проверка environment variables:');
+        console.log('- FIREBASE_PRIVATE_KEY существует:', !!privateKey);
+        console.log('- FIREBASE_CLIENT_EMAIL существует:', !!clientEmail);
+        console.log('- FIREBASE_CLIENT_EMAIL значение:', clientEmail);
+        
+        if (privateKey) {
+            console.log('- Private key длина:', privateKey.length);
+            console.log('- Private key начало:', privateKey.substring(0, 50));
+            console.log('- Private key содержит BEGIN:', privateKey.includes('BEGIN PRIVATE KEY'));
+            console.log('- Private key содержит END:', privateKey.includes('END PRIVATE KEY'));
+        }
+        
+        if (!privateKey || !clientEmail) {
             return {
                 statusCode: 500,
                 headers,
                 body: JSON.stringify({
                     status: 'error',
-                    message: 'Environment variables not configured',
-                    details: {
-                        hasPrivateKey,
-                        hasClientEmail,
-                        clientEmail: process.env.FIREBASE_CLIENT_EMAIL || 'not set'
+                    message: 'Environment variables missing',
+                    debug: {
+                        hasPrivateKey: !!privateKey,
+                        hasClientEmail: !!clientEmail,
+                        clientEmail: clientEmail || 'not set'
                     },
                     timestamp: new Date().toISOString()
                 })
             };
         }
         
-        // Инициализируем Firebase
-        if (!initializeFirebase()) {
-            return {
-                statusCode: 500,
-                headers,
-                body: JSON.stringify({
-                    status: 'error',
-                    message: 'Firebase initialization failed',
-                    details: {
-                        hasPrivateKey,
-                        hasClientEmail,
-                        clientEmail: process.env.FIREBASE_CLIENT_EMAIL
-                    },
-                    timestamp: new Date().toISOString()
-                })
-            };
+        // Проверяем инициализацию Firebase
+        console.log('🔥 Firebase apps count:', admin.apps.length);
+        
+        let firebaseInitialized = false;
+        
+        if (admin.apps.length === 0) {
+            console.log('🔄 Инициализируем Firebase...');
+            
+            try {
+                // Обрабатываем приватный ключ
+                let cleanPrivateKey = privateKey.replace(/\\n/g, '\n');
+                
+                console.log('🔑 Processed key length:', cleanPrivateKey.length);
+                console.log('🔑 Key starts with:', cleanPrivateKey.substring(0, 30));
+                
+                admin.initializeApp({
+                    credential: admin.credential.cert({
+                        projectId: "pulse-fm-84a48",
+                        privateKey: cleanPrivateKey,
+                        clientEmail: clientEmail,
+                    })
+                });
+                
+                firebaseInitialized = true;
+                console.log('✅ Firebase инициализирован успешно');
+                
+            } catch (initError) {
+                console.error('❌ Ошибка инициализации Firebase:', initError);
+                return {
+                    statusCode: 500,
+                    headers,
+                    body: JSON.stringify({
+                        status: 'error',
+                        message: 'Firebase initialization error',
+                        error: initError.message,
+                        debug: {
+                            privateKeyLength: privateKey.length,
+                            clientEmail: clientEmail,
+                            privateKeyStart: privateKey.substring(0, 30)
+                        },
+                        timestamp: new Date().toISOString()
+                    })
+                };
+            }
+        } else {
+            firebaseInitialized = true;
+            console.log('✅ Firebase уже инициализирован');
         }
         
-        const db = admin.firestore();
+        // Тестируем подключение к Firestore
+        console.log('🧪 Тестируем Firestore...');
         
-        // Получаем статистику
-        console.log('📈 Получение статистики...');
+        let firestoreWorks = false;
+        let stats = {};
+        let recentTracks = [];
         
-        const [newTracksSnap, knownTracksSnap] = await Promise.all([
-            db.collection('new_tracks').count().get(),
-            db.collection('known_tracks').count().get()
-        ]);
-        
-        const recentTracksSnap = await db.collection('new_tracks')
-            .orderBy('addedToLibrary', 'desc')
-            .limit(5)
-            .get();
-        
-        const recentTracks = recentTracksSnap.docs.map(doc => {
-            const data = doc.data();
-            return {
-                artist: data.artist,
-                title: data.title,
-                addedAt: data.addedToLibrary?.toDate()?.toISOString()
+        try {
+            const db = admin.firestore();
+            
+            // Простой тест подключения
+            const testQuery = await db.collection('new_tracks').limit(1).get();
+            console.log('✅ Firestore подключение работает');
+            firestoreWorks = true;
+            
+            // Получаем статистику
+            const [newTracksSnap, knownTracksSnap] = await Promise.all([
+                db.collection('new_tracks').count().get().catch(() => ({ data: () => ({ count: 0 }) })),
+                db.collection('known_tracks').count().get().catch(() => ({ data: () => ({ count: 0 }) }))
+            ]);
+            
+            stats = {
+                totalNewTracks: newTracksSnap.data().count,
+                totalKnownTracks: knownTracksSnap.data().count
             };
-        });
+            
+            // Получаем последние треки
+            const recentTracksSnap = await db.collection('new_tracks')
+                .orderBy('addedToLibrary', 'desc')
+                .limit(5)
+                .get();
+            
+            recentTracks = recentTracksSnap.docs.map(doc => {
+                const data = doc.data();
+                return {
+                    artist: data.artist,
+                    title: data.title,
+                    addedAt: data.addedToLibrary?.toDate()?.toISOString()
+                };
+            });
+            
+        } catch (firestoreError) {
+            console.error('❌ Ошибка Firestore:', firestoreError);
+            firestoreWorks = false;
+        }
         
         return {
             statusCode: 200,
             headers,
             body: JSON.stringify({
-                status: 'ok',
+                status: firestoreWorks ? 'ok' : 'partial',
                 timestamp: new Date().toISOString(),
                 firebase: {
                     initialized: firebaseInitialized,
+                    appsCount: admin.apps.length,
                     projectId: 'pulse-fm-84a48'
                 },
-                stats: {
-                    totalNewTracks: newTracksSnap.data().count,
-                    totalKnownTracks: knownTracksSnap.data().count
+                firestore: {
+                    connected: firestoreWorks
                 },
+                stats: stats,
                 recentTracks: recentTracks,
                 environment: {
-                    hasPrivateKey,
-                    hasClientEmail,
-                    netlifyFunction: true
+                    hasPrivateKey: !!privateKey,
+                    hasClientEmail: !!clientEmail,
+                    clientEmail: clientEmail,
+                    netlifyFunction: true,
+                    nodeVersion: process.version
                 },
-                version: '1.0.0'
+                debug: {
+                    privateKeyLength: privateKey ? privateKey.length : 0,
+                    privateKeyHasNewlines: privateKey ? privateKey.includes('\n') : false,
+                    privateKeyHasBegin: privateKey ? privateKey.includes('BEGIN PRIVATE KEY') : false
+                },
+                version: '1.1.0'
             })
         };
         
     } catch (error) {
-        console.error('❌ Ошибка статуса:', error);
+        console.error('❌ Общая ошибка статуса:', error);
         return {
             statusCode: 500,
             headers,
             body: JSON.stringify({
                 status: 'error',
-                message: error.message,
+                message: 'System error',
+                error: error.message,
                 stack: error.stack,
                 timestamp: new Date().toISOString()
             })
