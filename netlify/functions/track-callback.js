@@ -3,328 +3,287 @@ const admin = require('firebase-admin');
 // Глобальная переменная для отслеживания инициализации
 let firebaseInitialized = false;
 
-// Функция инициализации Firebase через JSON
+// Функция инициализации Firebase
 function initializeFirebase() {
     if (firebaseInitialized || admin.apps.length > 0) {
-        console.log('✅ Firebase уже инициализирован');
         return true;
     }
     
     try {
-        console.log('🔄 Инициализация Firebase...');
-        
-        // Проверяем наличие JSON переменной
         const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
         
         if (!serviceAccountJson) {
-            throw new Error('FIREBASE_SERVICE_ACCOUNT environment variable not found');
+            throw new Error('Missing Firebase Service Account');
         }
         
-        console.log('📝 Service account JSON найден, длина:', serviceAccountJson.length);
+        const serviceAccount = JSON.parse(serviceAccountJson);
         
-        // Парсим JSON
-        let serviceAccount;
-        try {
-            serviceAccount = JSON.parse(serviceAccountJson);
-            console.log('✅ JSON успешно распарсен');
-            console.log('📋 Project ID:', serviceAccount.project_id);
-            console.log('📋 Client Email:', serviceAccount.client_email);
-        } catch (parseError) {
-            throw new Error(`Failed to parse service account JSON: ${parseError.message}`);
-        }
-        
-        // Инициализируем Firebase Admin SDK
         admin.initializeApp({
             credential: admin.credential.cert(serviceAccount),
             projectId: serviceAccount.project_id
         });
         
         firebaseInitialized = true;
-        console.log('✅ Firebase Admin SDK успешно инициализирован');
+        console.log('✅ Firebase инициализирован');
         return true;
         
     } catch (error) {
-        console.error('❌ Ошибка инициализации Firebase:', error.message);
-        console.error('❌ Stack trace:', error.stack);
+        console.error('❌ Firebase ошибка:', error);
         return false;
     }
 }
 
-// Кэш для известных треков
+// Кэш треков
 let knownTracks = new Set();
 let cacheLoaded = false;
 
-// Загрузка кэша известных треков
+// Загрузка кэша
 async function loadCache() {
-    if (cacheLoaded) {
-        console.log('ℹ️ Кэш уже загружен');
-        return;
-    }
+    if (cacheLoaded) return;
     
     try {
-        console.log('🔄 Загрузка кэша известных треков...');
-        
         const db = admin.firestore();
         const snapshot = await db.collection('known_tracks').select('trackId').get();
         
         knownTracks.clear();
         snapshot.forEach(doc => {
-            const data = doc.data();
-            if (data.trackId) {
-                knownTracks.add(data.trackId);
-            }
+            knownTracks.add(doc.data().trackId);
         });
         
         cacheLoaded = true;
-        console.log(`✅ Кэш загружен: ${knownTracks.size} известных треков`);
-        
+        console.log(`Загружено ${knownTracks.size} известных треков`);
     } catch (error) {
-        console.error('❌ Ошибка загрузки кэша:', error);
-        // Продолжаем работу без кэша
+        console.error('Ошибка загрузки кэша:', error);
         cacheLoaded = true;
     }
 }
 
-// Создание уникального ID трека
+// Создание ID трека
 function createTrackId(artist, title) {
-    const normalizeText = (text) => {
-        return (text || '')
-            .toLowerCase()
-            .trim()
-            .replace(/[^\w\s\u0400-\u04FF]/g, '') // Оставляем буквы, цифры, пробелы, кириллицу
-            .replace(/\s+/g, '_') // Заменяем пробелы на подчеркивания
-            .replace(/_{2,}/g, '_') // Убираем двойные подчеркивания
-            .replace(/^_|_$/g, ''); // Убираем подчеркивания в начале и конце
-    };
-    
-    const cleanArtist = normalizeText(artist);
-    const cleanTitle = normalizeText(title);
-    
-    return `${cleanArtist}_${cleanTitle}`;
+    const clean = (text) => (text || '').toLowerCase().trim().replace(/[^\w\s\u0400-\u04FF]/g, '').replace(/\s+/g, '_');
+    return `${clean(artist)}_${clean(title)}`;
 }
 
-// Валидация данных трека
+// Валидация трека
 function isValidTrack(data) {
     if (!data || typeof data !== 'object') {
+        console.log('❌ Данные не объект:', typeof data, data);
         return false;
     }
     
     const artist = (data.artist || '').trim();
     const title = (data.title || '').trim();
     
-    // Проверяем наличие исполнителя и названия
+    console.log('🔍 Проверка полей:');
+    console.log('- artist:', `"${artist}" (length: ${artist.length})`);
+    console.log('- title:', `"${title}" (length: ${title.length})`);
+    
     if (!artist || !title) {
-        console.log('⚠️ Отсутствует исполнитель или название трека');
+        console.log('❌ Отсутствует исполнитель или название');
         return false;
     }
     
     // Фильтруем служебную информацию
-    const blacklist = ['реклама', 'джингл', 'позывные', 'promo', 'jingle', 'id', 'commercial'];
-    const fullText = `${artist} ${title}`.toLowerCase();
+    const blacklist = ['реклама', 'джингл', 'позывные', 'promo', 'jingle'];
+    const text = `${artist} ${title}`.toLowerCase();
     
     for (const word of blacklist) {
-        if (fullText.includes(word)) {
-            console.log(`⚠️ Отфильтрован как служебная информация: ${word}`);
+        if (text.includes(word)) {
+            console.log(`❌ Отфильтровано: ${word}`);
             return false;
         }
     }
     
+    console.log('✅ Валидация пройдена');
     return true;
 }
 
-// ОСНОВНАЯ ФУНКЦИЯ - правильный экспорт для Netlify Functions
+// ГЛАВНАЯ ФУНКЦИЯ
 exports.handler = async (event, context) => {
-    console.log('🚀 === НОВЫЙ ЗАПРОС К TRACK-CALLBACK ===');
+    console.log('🚀 === НОВЫЙ CALLBACK ЗАПРОС ===');
+    console.log('📅 Время:', new Date().toISOString());
     
     // CORS заголовки
     const headers = {
         'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Requested-With',
+        'Access-Control-Allow-Methods': 'GET, POST, OPTIONS, PUT, DELETE',
         'Content-Type': 'application/json'
     };
     
-    // Обработка preflight запроса
+    // OPTIONS запрос
     if (event.httpMethod === 'OPTIONS') {
-        console.log('📨 OPTIONS запрос - возвращаем CORS заголовки');
-        return {
-            statusCode: 200,
-            headers,
-            body: ''
-        };
+        console.log('📨 OPTIONS запрос - возвращаем CORS');
+        return { statusCode: 200, headers, body: '' };
     }
     
     try {
-        console.log('📨 Метод запроса:', event.httpMethod);
-        console.log('📨 Путь:', event.path);
-        console.log('📨 Query параметры:', event.queryStringParameters);
-        console.log('📨 Заголовки:', event.headers);
+        // ПОДРОБНОЕ ЛОГИРОВАНИЕ ВХОДЯЩИХ ДАННЫХ
+        console.log('📊 === АНАЛИЗ ЗАПРОСА ===');
+        console.log('🔸 HTTP Method:', event.httpMethod);
+        console.log('🔸 Path:', event.path);
+        console.log('🔸 Query String Parameters:', JSON.stringify(event.queryStringParameters, null, 2));
+        console.log('🔸 Headers:', JSON.stringify(event.headers, null, 2));
+        console.log('🔸 Body (raw):', event.body);
+        console.log('🔸 Body type:', typeof event.body);
+        console.log('🔸 Body length:', event.body ? event.body.length : 0);
+        console.log('🔸 IsBase64Encoded:', event.isBase64Encoded);
         
         // Инициализация Firebase
         if (!initializeFirebase()) {
             return {
                 statusCode: 500,
                 headers,
-                body: JSON.stringify({
-                    error: 'Firebase initialization failed',
-                    timestamp: new Date().toISOString()
-                })
+                body: JSON.stringify({ error: 'Firebase initialization failed' })
             };
         }
         
-        // Загрузка кэша известных треков
         await loadCache();
         
-        // Получение данных трека из запроса
+        // ПАРСИНГ ДАННЫХ ТРЕКА
         let trackData = {};
         
+        console.log('📝 === ПАРСИНГ ДАННЫХ ===');
+        
         if (event.httpMethod === 'POST') {
+            console.log('📨 POST запрос');
+            
             if (event.body) {
-                console.log('📝 POST body:', event.body);
+                console.log('📄 Body содержимое:', event.body);
                 
+                // Пробуем различные форматы
                 try {
-                    // Пробуем парсить как JSON
+                    // JSON формат
                     trackData = JSON.parse(event.body);
-                    console.log('✅ Данные распарсены как JSON');
+                    console.log('✅ Успешно распарсено как JSON:', trackData);
                 } catch (jsonError) {
-                    console.log('⚠️ Не JSON данные, пробуем как form data');
+                    console.log('⚠️ Не JSON, пробуем URL-encoded');
                     
-                    // Пробуем как URL-encoded данные
                     try {
+                        // URL-encoded формат
                         const params = new URLSearchParams(event.body);
                         trackData = Object.fromEntries(params);
-                        console.log('✅ Данные распарсены как form data');
-                    } catch (formError) {
-                        console.log('⚠️ Не удалось распарсить данные, используем как есть');
-                        trackData = { raw: event.body };
+                        console.log('✅ Успешно распарсено как URL-encoded:', trackData);
+                    } catch (urlError) {
+                        console.log('⚠️ Не URL-encoded, пробуем простой текст');
+                        
+                        // Возможно это простой текст
+                        if (event.body.includes('=')) {
+                            // Ручной парсинг key=value&key2=value2
+                            trackData = {};
+                            event.body.split('&').forEach(pair => {
+                                const [key, value] = pair.split('=');
+                                if (key && value) {
+                                    trackData[decodeURIComponent(key)] = decodeURIComponent(value);
+                                }
+                            });
+                            console.log('✅ Ручной парсинг URL-encoded:', trackData);
+                        } else {
+                            console.log('❌ Неизвестный формат body');
+                            trackData = { raw_body: event.body };
+                        }
                     }
                 }
             } else {
-                console.log('⚠️ POST запрос без body');
-                trackData = {};
+                console.log('⚠️ POST без body');
             }
+            
         } else if (event.httpMethod === 'GET') {
+            console.log('📨 GET запрос');
             trackData = event.queryStringParameters || {};
-            console.log('✅ Данные получены из query параметров');
-        } else {
-            return {
-                statusCode: 405,
-                headers,
-                body: JSON.stringify({ error: 'Method not allowed' })
-            };
+            console.log('📄 Query параметры:', trackData);
         }
         
-        console.log('📝 Финальные данные трека:', trackData);
+        console.log('🎯 Финальные данные трека:', JSON.stringify(trackData, null, 2));
         
-        // Валидация данных трека
-        if (!isValidTrack(trackData)) {
-            console.log('❌ Валидация не прошла');
-            return {
-                statusCode: 400,
-                headers,
-                body: JSON.stringify({ 
-                    error: 'Invalid track data',
-                    received: trackData,
-                    timestamp: new Date().toISOString()
-                })
-            };
-        }
+        // ВОЗВРАЩАЕМ ПОДРОБНУЮ ИНФОРМАЦИЮ ДЛЯ ОТЛАДКИ
+        const debugResponse = {
+            success: true,
+            message: 'Callback received for debugging',
+            debug: {
+                method: event.httpMethod,
+                receivedData: trackData,
+                hasArtist: !!(trackData.artist),
+                hasTitle: !!(trackData.title),
+                allKeys: Object.keys(trackData),
+                queryParams: event.queryStringParameters,
+                bodyLength: event.body ? event.body.length : 0,
+                headers: event.headers
+            },
+            timestamp: new Date().toISOString()
+        };
         
-        const artist = trackData.artist.trim();
-        const title = trackData.title.trim();
-        const trackId = createTrackId(artist, title);
-        
-        console.log(`🎵 Обрабатываем трек: "${artist} - ${title}"`);
-        console.log(`🔑 Track ID: ${trackId}`);
-        
-        // Проверяем, новый ли это трек
-        if (!knownTracks.has(trackId)) {
-            console.log('🆕 НАЙДЕН НОВЫЙ ТРЕК!');
+        // Если данные выглядят валидно, попробуем обработать
+        if (isValidTrack(trackData)) {
+            const artist = trackData.artist.trim();
+            const title = trackData.title.trim();
+            const trackId = createTrackId(artist, title);
             
-            // Добавляем в локальный кэш
-            knownTracks.add(trackId);
+            console.log(`🎵 Обрабатываем: "${artist} - ${title}"`);
             
-            const db = admin.firestore();
-            const timestamp = admin.firestore.FieldValue.serverTimestamp();
-            
-            try {
-                // Сохраняем как известный трек
+            if (!knownTracks.has(trackId)) {
+                console.log('🆕 НОВЫЙ ТРЕК!');
+                
+                knownTracks.add(trackId);
+                
+                const db = admin.firestore();
+                const timestamp = admin.firestore.FieldValue.serverTimestamp();
+                
+                // Сохраняем
                 await db.collection('known_tracks').doc(trackId).set({
-                    trackId: trackId,
-                    artist: artist,
-                    title: title,
-                    firstSeen: timestamp,
-                    createdAt: new Date().toISOString()
+                    trackId,
+                    artist,
+                    title,
+                    firstSeen: timestamp
                 });
                 
-                console.log('✅ Трек добавлен в known_tracks');
-                
-                // Добавляем в коллекцию новинок
                 await db.collection('new_tracks').add({
-                    artist: artist,
-                    title: title,
-                    trackId: trackId,
+                    artist,
+                    title,
+                    trackId,
                     addedToLibrary: timestamp,
                     firstPlayed: timestamp,
-                    source: 'myradio24_callback',
-                    createdAt: new Date().toISOString()
+                    source: 'myradio24'
                 });
                 
-                console.log('✅ Трек добавлен в new_tracks');
+                console.log(`✅ Трек добавлен: ${artist} - ${title}`);
                 
-            } catch (dbError) {
-                console.error('❌ Ошибка при сохранении в базу:', dbError);
-                throw dbError;
+                debugResponse.trackProcessed = true;
+                debugResponse.track = { artist, title, trackId };
+                debugResponse.isNew = true;
+                
+            } else {
+                console.log('ℹ️ Трек уже известен');
+                debugResponse.trackProcessed = true;
+                debugResponse.track = { artist, title, trackId };
+                debugResponse.isNew = false;
             }
-            
-            console.log(`🎉 Новый трек успешно обработан: ${artist} - ${title}`);
-            
-            return {
-                statusCode: 200,
-                headers,
-                body: JSON.stringify({ 
-                    success: true, 
-                    message: 'New track added successfully',
-                    track: { 
-                        artist: artist, 
-                        title: title, 
-                        trackId: trackId 
-                    },
-                    isNew: true,
-                    timestamp: new Date().toISOString()
-                })
-            };
-            
         } else {
-            console.log('ℹ️ Трек уже известен, пропускаем');
-            
-            return {
-                statusCode: 200,
-                headers,
-                body: JSON.stringify({ 
-                    success: true, 
-                    message: 'Track already known',
-                    track: { 
-                        artist: artist, 
-                        title: title, 
-                        trackId: trackId 
-                    },
-                    isNew: false,
-                    timestamp: new Date().toISOString()
-                })
-            };
+            console.log('❌ Трек не прошел валидацию');
+            debugResponse.trackProcessed = false;
+            debugResponse.validationFailed = true;
         }
         
+        return {
+            statusCode: 200,
+            headers,
+            body: JSON.stringify(debugResponse, null, 2)
+        };
+        
     } catch (error) {
-        console.error('❌ Критическая ошибка в обработчике:', error);
+        console.error('❌ Критическая ошибка:', error);
         
         return {
             statusCode: 500,
             headers,
             body: JSON.stringify({ 
-                error: 'Internal server error',
+                error: 'Server error',
                 message: error.message,
-                timestamp: new Date().toISOString()
+                debug: {
+                    method: event.httpMethod,
+                    body: event.body,
+                    queryParams: event.queryStringParameters
+                }
             })
         };
     }
