@@ -65,19 +65,35 @@ function parseTrackData(data) {
     let artist = '';
     let title = '';
     
-    // Формат myradio24: отдельные поля artist и songtitle
-    if (data.artist && data.songtitle) {
+    // Приоритет 1: Поле song (полная информация о треке)
+    if (data.song && data.song !== data.title) {
+        const trackParts = data.song.split(' - ');
+        if (trackParts.length >= 2) {
+            artist = trackParts[0].trim();
+            title = trackParts.slice(1).join(' - ').trim();
+            console.log('✅ Приоритет: Формат song найден, разделен по " - "');
+        } else {
+            // Если нет разделителя " - ", используем artist и title отдельно
+            if (data.artist && data.title && data.title !== 'PULSE FM') {
+                artist = data.artist;
+                title = data.title;
+                console.log('✅ Fallback: используем artist/title');
+            }
+        }
+    }
+    // Приоритет 2: Формат myradio24: отдельные поля artist и songtitle
+    else if (data.artist && data.songtitle && data.songtitle !== 'PULSE FM') {
         artist = data.artist;
         title = data.songtitle;
         console.log('✅ Формат myradio24 artist/songtitle найден');
     }
-    // Альтернативный формат: artist и title
-    else if (data.artist && data.title) {
+    // Приоритет 3: artist и title (но проверяем, что title не название станции)
+    else if (data.artist && data.title && data.title !== 'PULSE FM' && data.title !== data.djname) {
         artist = data.artist;
         title = data.title;
         console.log('✅ Формат artist/title найден');
     }
-    // Формат с объединенным полем song
+    // Приоритет 4: Формат с объединенным полем song
     else if (data.song) {
         const trackParts = data.song.split(' - ');
         if (trackParts.length >= 2) {
@@ -98,7 +114,7 @@ function parseTrackData(data) {
             }
         }
     }
-    // Формат nowplaying
+    // Приоритет 5: Формат nowplaying
     else if (data.nowplaying) {
         const trackParts = data.nowplaying.split(' - ');
         if (trackParts.length >= 2) {
@@ -107,7 +123,7 @@ function parseTrackData(data) {
             console.log('✅ Формат nowplaying найден');
         }
     }
-    // Формат track
+    // Приоритет 6: Формат track
     else if (data.track) {
         const trackParts = data.track.split(' - ');
         if (trackParts.length >= 2) {
