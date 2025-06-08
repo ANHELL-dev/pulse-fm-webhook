@@ -113,10 +113,22 @@ exports.handler = async (event, context) => {
             
             recentTracks = recentTracksSnap.docs.map(doc => {
                 const data = doc.data();
+                
+                // Пробуем получить московское время, если нет - конвертируем UTC
+                let moscowTime = null;
+                if (data.addedToLibraryMoscow) {
+                    moscowTime = data.addedToLibraryMoscow.toDate().toISOString();
+                } else if (data.addedToLibrary) {
+                    const utcTime = data.addedToLibrary.toDate();
+                    const moscowDate = new Date(utcTime.getTime() + 3 * 60 * 60 * 1000);
+                    moscowTime = moscowDate.toISOString();
+                }
+                
                 return {
                     artist: data.artist,
                     title: data.title,
-                    addedAt: data.addedToLibrary?.toDate()?.toISOString()
+                    addedAt: data.addedToLibrary?.toDate()?.toISOString(),
+                    addedAtMoscow: moscowTime
                 };
             });
             
